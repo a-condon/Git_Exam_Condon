@@ -1,0 +1,83 @@
+#!/bin/bash
+
+# Description: Extract rare bird observations
+# Usage: ./find_rare_birds [list of observation CSV files using wildcards]
+
+# Constants
+INFO_FILE="/mnt/homes4celsrs/shared/439539/birds/bird-info"
+HEADER="species_code,scientific_name,common_name,year,location_id,latitude,longitude,state"
+
+# Validate input
+if [ "$#" -eq 0 ]; then
+  echo "Error: No observation files provided."
+  echo "Usage: ./find_rare_birds [list of observation files]"
+  exit 1
+fi
+
+if [ ! -f "$INFO_FILE" ]; then
+  echo "Error: Bird info file not found at $INFO_FILE"
+  exit 1
+fi
+
+# Build species lookup table
+awk -F',' 'NR > 1 {
+  gsub(/"/, "", $1);
+  gsub(/"/, "", $4);
+  gsub(/"/, "", $5);
+  species[$1] = $4 "," $5;
+}
+END {
+  for (s in species) print s "," species[s];
+}' "$INFO_FILE" > bird_lookup.tmp
+
+# Merge observation files
+> all_obs.csv
+for file in "$@"; do
+  if [ -f "$file" ]; then
+    awk -F',' -v OFS=',' 'FNR==1 {next}
+      {
+        code = $12;
+        year = $10;
+        loc = $1;
+        lat = $2;
+        lon = $3;
+        state = ($4 ~ /US-/) ? substr($4, 4) : $4;
+        print code, year, loc, lat, lon, state;
+      }' "$file" >> merged_obs.tmp
+  else
+    echo "Warning: Skipping missing file: $file"
+  fi
+done
+
+# Join with bird info
+awk -F',' '
+FNR==NR {
+  species_lookup[$1] = $2 "," $3;
+  next
+}
+{
+  code = $1;
+  if (code in species_lookup) {
+    print code "," species_lookup[code] "," $2 "," $3 "," $4 "," $5 "," $6;
+  }
+}' bird_lookup.tmp merged_obs.tmp > all_obs.csv
+
+# Add header
+sed -i "1i $HEADER" all_obs.csv
+
+# Output 1: Species observed exactly once overall
+echo "$HEADER" > obs_overall.csv
+awk -F',' 'NR>1 {count[$1]++; data[NR]=$0; key[NR]=$1}
+END {for (i in data) if (count[key[i]]==1) print data[i]}' all_obs.csv | sort >> obs_overall.csv
+
+# Output 2: Species observed exactly once per year
+echo "$HEADER" > obs_by_year.csv
+awk -F',' 'NR>1 {k=$1 "," $4; count[k]++; data[NR]=$0; key[NR]=k}
+END {for (i in data) if (count[key[i]]==1) print data[i]}' all_obs.csv | sort >> obs_by_year.csv
+
+# Cleanup
+rm bird_lookup.tmp merged_obs.tmp all_obs.csv
+
+echo "Done. Created:"
+echo " - obs_overall.csv"
+echo " - obs_by_year.csv"
